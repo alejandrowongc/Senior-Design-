@@ -1,75 +1,155 @@
-# Process contours
-if len(contours) > 0:
-    # Pick the largest contour (strip)
-    cnt = max(contours, key=cv2.contourArea)
+#!/usr/bin/env python3
+import cv2
+import numpy as np
+from picamera2 import Picamera2
+import time
 
-    area = cv2.contourArea(cnt)
-    if 1000 < area < 15000:
+# ---------------- Camera Setup ----------------
+picam2 = Picamera2()
+config = picam2.create_preview_configuration(main={"size": (800, 480)})
+picam2.configure(config)
+picam2.start()
+time.sleep(2)
 
-        # Compute extreme left and right points of the strip
-        xs = cnt[:, 0, 0]
-        ys = cnt[:, 0, 1]
+# Lock exposure and white balance
+controls = {"AwbEnable": False, "AeEnable": False}
+picam2.set_controls(controls)
+picam2.set_controls({"AwbMode": 0, "ColourGains": (1.8, 1.0)})
 
-        x_min = np.min(xs)
-        x_max = np.max(xs)
-        y_min = np.min(ys)
-        y_max = np.max(ys)
+# ROI definition
+ROI_X1, ROI_Y1, ROI_X2, ROI_Y2 = 10, 175, 790, 325
 
-        w = x_max - x_min
-        h = y_max - y_min
+PIXELS_PER_INCH = 42.0
 
-        # Strip length = longer dimension (always use full contour)
-        length_pixels = max(w, h)
-        length_inches = length_pixels / PIXELS_PER_INCH
+# 3-inch batch settings
+TARGET_LENGTH = 3.0
+TOL = 0.125
+LOW_LIMIT = TARGET_LENGTH - TOL
+HIGH_LIMIT = TARGET_LENGTH + TOL
 
-        # Centroid
-        M = cv2.moments(cnt)
-        if M["m00"] > 0:
-            cx = int(M["m10"] / M["m00"])
-            cy = int(M["m01"] / M["m00"])
-        else:
-            cx = cy = 0
+# Center zone
+ROI_WIDTH = ROI_X2 - ROI_X1
+ROI_CENTER = ROI_WIDTH // 2
+CENTER_ZONE_LEFT = ROI_CENTER - 30
+CENTER_ZONE_RIGHT = ROI_CENTER + 30
 
-        # Draw bounding box for visualization
-        cv2.rectangle(roi, (x_min, y_min), (x_max, y_max), (200, 200, 200), 1)
-        cv2.circle(roi, (cx, cy), 3, (255, 255, 0), -1)
+print("Running 3-inch batch test. Press 'q' to quit.")
 
-        # Always display length
-        cv2.putText(
-            roi,
-            f"{length_inches:.3f} in",
-            (x_min, y_min - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 255, 255),
-            2
-        )
+while True:
+    frame = picam2.capture_array()
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # PASS/REJECT only based on centroid location
-        if CENTER_ZONE_LEFT <= cx <= CENTER_ZONE_RIGHT:
-            if LOW_LIMIT <= length_inches <= HIGH_LIMIT:
-                result = "PASS"
-                color = (0, 255, 0)
+    # Draw ROI on full frame
+    cv2.rectangle(frame_rgb, (ROI_X1, ROI_Y1), (ROI_X2, ROI_Y2), (255, 0, 0), 2)
+
+    # Draw center zone visualization
+    cv2.line(frame_rgb,
+             (ROI_X1 + CENTER_ZONE_LEFT, ROI_Y1),
+             (ROI_X1 + CENTER_ZONE_LEFT, ROI_Y2),
+             (0, 255, 255), 1)
+    cv2.line(frame_rgb,
+             (ROI_X1 + CENTER_ZONE_RIGHT, ROI_Y1),
+             (ROI_X1 + CENTER_ZONE_RIGHT, ROI_Y2),
+             (0, 255, 255), 1)
+
+    # Extract ROI
+    roi = frame_rgb[ROI_Y1:ROI_Y2, ROI_X1:ROI_X2]
+
+    # Grayscale + blur + edges
+    gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blur, 50, 150)
+    kernel = np.ones((3,3), np.uint8)
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+    # Find contours
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Process contours
+    if len(contours) > 0:
+
+        # Use largest contour = the strip
+        cnt = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(cnt)
+
+        if 1000 < area < 15000:
+
+            # Extremes of the strip (full length measurement)
+            xs = cnt[:, 0, 0]
+            ys = cnt[:, 0, 1]
+
+            x_min = np.min(xs)
+            x_max = np.max(xs)
+            y_min = np.min(ys)
+            y_max = np.max(ys)
+
+            w = x_max - x_min
+            h = y_max - y_min
+
+            # Strip length = longer dimension
+            length_pixels = max(w, h)
+            length_inches = length_pixels / PIXELS_PER_INCH
+
+            # Centroid
+            M = cv2.moments(cnt)
+            if M["m00"] > 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
             else:
-                result = "REJECT"
-                color = (0, 0, 255)
+                cx = cy = 0
 
+            # Draw full bounding box
+            cv2.rectangle(roi, (x_min, y_min), (x_max, y_max), (200, 200, 200), 1)
+            cv2.circle(roi, (cx, cy), 3, (255, 255, 0), -1)
+
+            # Always display length
             cv2.putText(
                 roi,
-                result,
-                (x_min, y_max + 20),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                color,
-                2
-            )
-        else:
-            cv2.putText(
-                roi,
-                "WAITING",
-                (x_min, y_max + 20),
+                f"{length_inches:.3f} in",
+                (x_min, y_min - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
-                (0, 255, 255),
+                (255, 255, 255),
                 2
             )
+
+            # PASS/REJECT depends ONLY on centroid entering center band
+            if CENTER_ZONE_LEFT <= cx <= CENTER_ZONE_RIGHT:
+
+                if LOW_LIMIT <= length_inches <= HIGH_LIMIT:
+                    result = "PASS"
+                    color = (0, 255, 0)
+                else:
+                    result = "REJECT"
+                    color = (0, 0, 255)
+
+                cv2.putText(
+                    roi,
+                    result,
+                    (x_min, y_max + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    color,
+                    2
+                )
+
+            else:
+                cv2.putText(
+                    roi,
+                    "WAITING",
+                    (x_min, y_max + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 255),
+                    2
+                )
+
+    # Show output
+    cv2.imshow("Full Frame (ROI Marked)", frame_rgb)
+    cv2.imshow("ROI Contours", roi)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cv2.destroyAllWindows()
+picam2.stop()
