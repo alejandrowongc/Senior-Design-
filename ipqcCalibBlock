@@ -25,10 +25,10 @@ TOL = 0.125
 LOW_LIMIT = TARGET_LENGTH - TOL
 HIGH_LIMIT = TARGET_LENGTH + TOL
 
-### NEW — Define the vertical center band of the ROI (20% of ROI height)
-roi_h = ROI_Y2 - ROI_Y1
-center_band_top = int((roi_h * 0.5) - (roi_h * 0.10))
-center_band_bottom = int((roi_h * 0.5) + (roi_h * 0.10))
+### NEW — Define the horizontal center band (20% of ROI width)
+roi_w = ROI_X2 - ROI_X1
+center_band_left = int((roi_w * 0.5) - (roi_w * 0.10))
+center_band_right = int((roi_w * 0.5) + (roi_w * 0.10))
 
 print("Press 'q' to quit")
 while True:
@@ -70,7 +70,7 @@ while True:
         # Draw bounding box
         cv2.rectangle(roi, (x, y), (x + w, y + h), (255, 255, 0), 1)
 
-        # Write dimension only (always allowed)
+        # Always write dimension
         cv2.putText(
             roi,
             f"{length_inches:.3f} in",
@@ -83,9 +83,8 @@ while True:
 
         cv2.circle(roi, (cx, cy), 3, (255, 255, 0), -1)
 
-        ### NEW — Only PASS/REJECT when centroid crosses center band
-        if center_band_top <= cy <= center_band_bottom:
-            # Spec check
+        ### NEW — Trigger PASS/REJECT only inside horizontal center band
+        if center_band_left <= cx <= center_band_right:
             if LOW_LIMIT <= length_inches <= HIGH_LIMIT:
                 result = "PASS"
                 color = (0, 255, 0)
@@ -104,9 +103,8 @@ while True:
             )
 
     # Draw center band visualization (optional)
-    ### NEW — Helps you tune the region
-    cv2.line(roi, (0, center_band_top), (roi.shape[1], center_band_top), (0, 255, 255), 1)
-    cv2.line(roi, (0, center_band_bottom), (roi.shape[1], center_band_bottom), (0, 255, 255), 1)
+    cv2.line(roi, (center_band_left, 0), (center_band_left, roi.shape[0]), (0, 255, 255), 1)
+    cv2.line(roi, (center_band_right, 0), (center_band_right, roi.shape[0]), (0, 255, 255), 1)
 
     # Show
     cv2.imshow("Full Frame (ROI Marked)", frame_rgb)
