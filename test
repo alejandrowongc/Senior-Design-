@@ -25,6 +25,11 @@ TOL = 0.125
 LOW_LIMIT = TARGET_LENGTH - TOL
 HIGH_LIMIT = TARGET_LENGTH + TOL
 
+# Horizontal band
+roi_w = ROI_X2 - ROI_X1
+center_band_left = int((roi_w * 0.5) - (roi_w * 0.10))
+center_band_right = int((roi_w * 0.5) + (roi_w * 0.10))
+
 print("Press 'q' to quit")
 while True:
     frame = picam2.capture_array()
@@ -47,56 +52,57 @@ while True:
     # Find contours
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Process contours
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area < 1000 or area > 15000:
-            continue
 
         x, y, w, h = cv2.boundingRect(cnt)
 
-        # Determine length as the larger dimension
+        # Main length metrics
         length_pixels = max(w, h)
         length_inches = length_pixels / PIXELS_PER_INCH
 
-        # Spec check
-        if LOW_LIMIT <= length_inches <= HIGH_LIMIT:
-            result = "PASS"
-            color = (0, 255, 0)
-        else:
-            result = "REJECT"
-            color = (0, 0, 255)
+        cx, cy = x + w // 2, y + h // 2
 
         # Draw bounding box
-        cv2.rectangle(roi, (x, y), (x + w, y + h), color, 2)
+        cv2.rectangle(roi, (x, y), (x + w, y + h), (255, 255, 0), 1)
 
-        # Write dimension in inches with precision
+        # NEW — Write BOTH pixel count AND inch measurement
         cv2.putText(
             roi,
-            f"{length_inches:.3f} in",
-            (x, y - 10),
+            f"{length_inches:.3f} in  |  {length_pixels} px",
+            (x, max(0, y - 10)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             (255, 255, 255),
             2
         )
 
-        # Write PASS/REJECT
-        cv2.putText(
-            roi,
-            result,
-            (x, y + h + 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            color,
-            2
-        )
-
-        # Optional centroid
-        cx, cy = x + w // 2, y + h // 2
         cv2.circle(roi, (cx, cy), 3, (255, 255, 0), -1)
 
-    # Show
+        # PASS/REJECT inside horizontal band
+        if center_band_left <= cx <= center_band_right:
+            if LOW_LIMIT <= length_inches <= HIGH_LIMIT:
+                result = "PASS"
+                color = (0, 255, 0)
+            else:
+                result = "REJECT"
+                color = (0, 0, 255)
+
+            cv2.putText(
+                roi,
+                result,
+                (x, y + h + 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color,
+                2
+            )
+
+    # Visualize band
+    cv2.line(roi, (center_band_left, 0), (center_band_left, roi.shape[0]), (0, 255, 255), 1)
+    cv2.line(roi, (center_band_right, 0), (center_band_right, roi.shape[0]), (0, 255, 255), 1)
+    cv2.line(roi, (roi.shape[1]//2,0), (roi.shape[1]//2,roi.shape[0]), (0, 255, 0),1)
+
     cv2.imshow("Full Frame (ROI Marked)", frame_rgb)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
