@@ -1,0 +1,33 @@
+# capture_checkerboard.py
+# Run on the Pi. Requires picamera2, libcamera stack and python bindings installed.
+
+import os
+from picamera2 import Picamera2, Preview
+import cv2
+import time
+
+OUT_DIR = "calib_images"
+os.makedirs(OUT_DIR, exist_ok=True)
+
+picam2 = Picamera2()
+config = picam2.create_preview_configuration(main={"size": (4056, 3040)})  # use sensor fullres if possible
+picam2.configure(config)
+picam2.start()
+time.sleep(2)
+
+print("Manual capture script. Press SPACE to save image, ESC to exit.")
+count = 0
+while True:
+    frame = picam2.capture_array()
+    cv2.imshow("preview", cv2.resize(frame, (1280, 960)))
+    k = cv2.waitKey(1) & 0xFF
+    if k == 27:  # ESC
+        break
+    if k == 32:  # SPACE
+        filename = os.path.join(OUT_DIR, f"img_{count:03d}.jpg")
+        cv2.imwrite(filename, frame)
+        print("Saved", filename)
+        count += 1
+
+cv2.destroyAllWindows()
+picam2.stop()
