@@ -20,30 +20,20 @@ picam2.set_controls({"AwbMode": 0, "ColourGains": (1.8, 1.0)})
 ROI_X1, ROI_Y1, ROI_X2, ROI_Y2 = 10, 175, 790, 325
 
 PIXELS_PER_INCH = 42.0
-TOL = 0.125
+
+# 3-inch batch settings
 TARGET_LENGTH = 3.0
+TOL = 0.125
 LOW_LIMIT = TARGET_LENGTH - TOL
 HIGH_LIMIT = TARGET_LENGTH + TOL
 
-# --- Batch calibration factors (adjust after calibration) ---
-CAL_FACTORS = {
-    3: 1.000,
-    9: 1.000,
-    12: 1.000,
-    16: 1.000
-}
-
-# Default batch
-BATCH_LENGTH = 3
-
-# Center zone for accurate measurement
+# Center zone
 ROI_WIDTH = ROI_X2 - ROI_X1
 ROI_CENTER = ROI_WIDTH // 2
 CENTER_ZONE_LEFT = ROI_CENTER - 30
 CENTER_ZONE_RIGHT = ROI_CENTER + 30
 
-print("Press '3', '9', '1' (12 in), or '2' (16 in) to change batch.")
-print("Press 'q' to quit")
+print("Running 3-inch batch test. Press 'q' to quit.")
 
 while True:
     frame = picam2.capture_array()
@@ -69,7 +59,6 @@ while True:
     gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blur, 50, 150)
-
     kernel = np.ones((3,3), np.uint8)
     edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
 
@@ -83,24 +72,20 @@ while True:
             continue
 
         x, y, w, h = cv2.boundingRect(cnt)
-
-        # Determine length as the larger dimension
         length_pixels = max(w, h)
-
-        cam_length_inches = length_pixels / PIXELS_PER_INCH
-        adj_length_inches = cam_length_inches * CAL_FACTORS[BATCH_LENGTH]
+        length_inches = length_pixels / PIXELS_PER_INCH
 
         # Centroid
-        cx, cy = x + w // 2, y + h // 2
+        cx = x + w // 2
+        cy = y + h // 2
 
-        # Draw bounding box
         cv2.rectangle(roi, (x, y), (x + w, y + h), (200, 200, 200), 1)
         cv2.circle(roi, (cx, cy), 3, (255, 255, 0), -1)
 
-        # Check if centroid is inside the center zone
+        # Only measure when passing through the center band
         if CENTER_ZONE_LEFT <= cx <= CENTER_ZONE_RIGHT:
-            # Spec check only inside center zone
-            if LOW_LIMIT <= adj_length_inches <= HIGH_LIMIT:
+
+            if LOW_LIMIT <= length_inches <= HIGH_LIMIT:
                 result = "PASS"
                 color = (0, 255, 0)
             else:
@@ -111,7 +96,7 @@ while True:
 
             cv2.putText(
                 roi,
-                f"{adj_length_inches:.3f} in",
+                f"{length_inches:.3f} in",
                 (x, y - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
@@ -130,10 +115,9 @@ while True:
             )
 
         else:
-            # Outside center zone → do not judge
             cv2.putText(
                 roi,
-                "WAITING FOR CENTER",
+                "WAITING",
                 (x, y - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
@@ -141,29 +125,12 @@ while True:
                 2
             )
 
-    # Display current batch
-    cv2.putText(frame_rgb, f"Batch: {BATCH_LENGTH} in", (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 0), 2)
-
-    # Show
+    # Show output
     cv2.imshow("Full Frame (ROI Marked)", frame_rgb)
     cv2.imshow("ROI Contours", roi)
 
-    key = cv2.waitKey(1) & 0xFF
-
-    # Quit
-    if key == ord('q'):
+    if cv2.waitKey(1) & 0xFF == ord('q'):
         break
-
-    # Keyboard batch selection
-    if key == ord('3'):
-        BATCH_LENGTH = 3
-    elif key == ord('9'):
-        BATCH_LENGTH = 9
-    elif key == ord('1'):     # For 12 inches
-        BATCH_LENGTH = 12
-    elif key == ord('2'):     # For 16 inches
-        BATCH_LENGTH = 16
 
 cv2.destroyAllWindows()
 picam2.stop()
