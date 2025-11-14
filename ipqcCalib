@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+import cv2
+import numpy as np
+from picamera2 import Picamera2
+import time
+
+# ---------------- Camera Setup ----------------
+picam2 = Picamera2()
+config = picam2.create_preview_configuration(main={"size": (800, 480)})
+picam2.configure(config)
+picam2.start()
+time.sleep(2)
+
+# Lock exposure and white balance
+controls = {"AwbEnable": False, "AeEnable": False}
+picam2.set_controls(controls)
+picam2.set_controls({"AwbMode": 0, "ColourGains": (1.8, 1.0)})
+
+# ROI definition
+ROI_X1, ROI_Y1, ROI_X2, ROI_Y2 = 10, 175, 790, 325
+
+PIXELS_PER_INCH = 42.0
+TOL = 0.125
+TARGET_LENGTH = 3.0
+LOW_LIMIT = TARGET_LENGTH - TOL
+HIGH_LIMIT = TARGET_LENGTH + TOL
+
+# --- Batch calibration factors (adjust after calibration) ---
+CAL_FACTORS = {
+    6: 1.000,
+    9: 1.000,
+    12: 1.000,
+    16: 1.000
+}
+
+# Default batch
+BATCH_LENGTH = 6
+
+# Center zone for accurate measurement
+ROI_WIDTH = ROI_X2 - ROI_X1
+ROI_CENTER = ROI_WIDTH // 2
+CENTER_ZONE_LEFT = ROI_CENTER - 30
+CENTER_ZONE_RIGHT = ROI_CENTER + 30
+
+print("Press '6', '9', '1' (12 in), or '2' (16 in) to change batch.")
+print("Press 'q' to quit")
+
+while True:
+    frame = picam2.capture_array()
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    # Draw ROI on full frame
+    cv2.rectangle(frame_rgb, (ROI_X1, ROI_Y1), (ROI_X2, ROI_Y2), (255, 0, 0), 2)
+
+    # Draw center zone visualization
+    cv2.line(frame_rgb,
+             (ROI_X1 + CENTER_ZONE_LEFT, ROI_Y1),
+             (ROI_X1 + CENTER_ZONE_LEFT, ROI_Y2),
+             (0, 255, 255), 1)
+    cv2.line(frame_rgb,
+             (ROI_X1 + CENTER_ZONE_RIGHT, ROI_Y1),
+             (ROI_X1 + CENTER_ZONE_RIGHT, ROI_Y2),
+             (0, 255, 255), 1)
+
+    # Extract ROI
+    roi = frame_rgb[ROI_Y1:ROI_Y2, ROI_X1:ROI_X2]
+
+    # Grayscale + blur + edges
+    gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blur, 50, 150)
+
+    kernel = np.ones((3,3), np.uint8)
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+    # Find contours
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Process contours
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < 1000 or area > 15000:
+            continue
+
+        x, y, w, h = cv2.boundingRect(cnt)
+
+        # Determine length as the larger dimension
+        length_pixels = max(w, h)
+
+        cam_length_inches = length_pixels / PIXELS_PER_INCH
+        adj_length_inches = cam_length_inches * CAL_FACTORS[BATCH_LENGTH]
+
+        # Centroid
+        cx, cy = x + w // 2, y + h // 2
+
+        # Draw bounding box
+        cv2.rectangle(roi, (x, y), (x + w, y + h), (200, 200, 200), 1)
+        cv2.circle(roi, (cx, cy), 3, (255, 255, 0), -1)
+
+        # Check if centroid is inside the center zone
+        if CENTER_ZONE_LEFT <= cx <= CENTER_ZONE_RIGHT:
+            # Spec check only inside center zone
+            if LOW_LIMIT <= adj_length_inches <= HIGH_LIMIT:
+                result = "PASS"
+                color = (0, 255, 0)
+            else:
+                result = "REJECT"
+                color = (0, 0, 255)
+
+            cv2.rectangle(roi, (x, y), (x + w, y + h), color, 2)
+
+            cv2.putText(
+                roi,
+                f"{adj_length_inches:.3f} in",
+                (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2
+            )
+
+            cv2.putText(
+                roi,
+                result,
+                (x, y + h + 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color,
+                2
+            )
+
+        else:
+            # Outside center zone → do not judge
+            cv2.putText(
+                roi,
+                "WAITING FOR CENTER",
+                (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 255),
+                2
+            )
+
+    # Display current batch
+    cv2.putText(frame_rgb, f"Batch: {BATCH_LENGTH} in", (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 0), 2)
+
+    # Show
+    cv2.imshow("Full Frame (ROI Marked)", frame_rgb)
+    cv2.imshow("ROI Contours", roi)
+
+    key = cv2.waitKey(1) & 0xFF
+
+    # Quit
+    if key == ord('q'):
+        break
+
+    # Keyboard batch selection
+    if key == ord('6'):
+        BATCH_LENGTH = 6
+    elif key == ord('9'):
+        BATCH_LENGTH = 9
+    elif key == ord('1'):     # For 12 inches
+        BATCH_LENGTH = 12
+    elif key == ord('2'):     # For 16 inches
+        BATCH_LENGTH = 16
+
+cv2.destroyAllWindows()
+picam2.stop()
