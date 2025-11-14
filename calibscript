@@ -1,0 +1,101 @@
+# calibrate_camera.py
+import cv2
+import numpy as np
+import glob
+import os
+
+# --- USER PARAMETERS ---
+# If your checkerboard is 6x11 squares, internal corners = (5,10).
+# If your checkerboard is already specified as inner corners, use that directly.
+CHECKERBOARD = (5, 10)   # (internal corners per row, per column). Change if needed.
+SQUARE_SIZE_MM = 25.0    # set to actual square size in millimeters (measure precisely)
+IMAGE_GLOB = "calib_images/*.jpg"
+OUTPUT_FILE = "camera_calib.npz"  # saves mtx, dist, rvecs, tvecs, reproj_error
+
+# --- prepare object points based on checkerboard ---
+objp = np.zeros((CHECKERBOARD[1]*CHECKERBOARD[0], 3), np.float32)
+# Note: np.mgrid uses range like 0:cols,0:rows -> adjust ordering to fill row-major
+objp[:, :2] = np.mgrid[0:CHECKERBOARD[0], 0:CHECKERBOARD[1]].T.reshape(-1, 2)
+objp = objp * SQUARE_SIZE_MM  # scale by square size -> units in mm
+
+# termination criteria for cornerSubPix
+criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+
+objpoints = []  # 3D points in real world space
+imgpoints = []  # 2D points in image plane
+
+images = glob.glob(IMAGE_GLOB)
+if len(images) == 0:
+    raise RuntimeError(f"No images found with pattern {IMAGE_GLOB}")
+
+print(f"Found {len(images)} images. Processing...")
+
+for fname in images:
+    img = cv2.imread(fname)
+    if img is None:
+        print("Skipping unreadable file:", fname)
+        continue
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Find the chess board corners
+    flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
+    ret, corners = cv2.findChessboardCorners(gray, CHECKERBOARD, flags)
+
+    if ret:
+        # refine corner positions
+        corners2 = cv2.cornerSubPix(gray, corners, (11,11), (-1,-1), criteria)
+        objpoints.append(objp)
+        imgpoints.append(corners2)
+
+        # draw and show for debug (optional)
+        vis = img.copy()
+        cv2.drawChessboardCorners(vis, CHECKERBOARD, corners2, ret)
+        # save visualization optionally
+        vis_fname = os.path.join("calib_images", "vis_" + os.path.basename(fname))
+        cv2.imwrite(vis_fname, vis)
+        print("Corners found and saved viz:", vis_fname)
+    else:
+        print("Pattern not found in", fname)
+
+if len(objpoints) < 10:
+    print("Warning: fewer than 10 successful detections. Calibration may be poor.")
+print(f"Successful detections: {len(objpoints)}")
+
+# --- calibrate camera ---
+ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], None, None)
+
+# compute reprojection error
+total_error = 0
+for i in range(len(objpoints)):
+    imgpoints2, _ = cv2.projectPoints(objpoints[i], rvecs[i], tvecs[i], mtx, dist)
+    error = cv2.norm(imgpoints[i], imgpoints2, cv2.NORM_L2) / len(imgpoints2)
+    total_error += error
+mean_error = total_error / len(objpoints) if len(objpoints) else float('inf')
+
+print("Calibration RMS:", ret)
+print("Camera matrix:\n", mtx)
+print("Distortion coefficients:\n", dist.ravel())
+print("Mean reprojection error (pixels):", mean_error)
+
+# save results
+np.savez(OUTPUT_FILE, camera_matrix=mtx, dist_coeffs=dist, rvecs=rvecs, tvecs=tvecs, reproj_error=mean_error)
+print("Saved calibration to", OUTPUT_FILE)
+
+# also write YAML (optional)
+fs = cv2.FileStorage("camera_calib.yaml", cv2.FILE_STORAGE_WRITE)
+fs.write("camera_matrix", mtx)
+fs.write("dist_coeffs", dist)
+fs.release()
+print("Saved YAML camera_calib.yaml")
+
+# --- Example: undistort a sample image ---
+sample = images[0]
+img = cv2.imread(sample)
+h, w = img.shape[:2]
+newcameramtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w,h), 1, (w,h))
+mapx, mapy = cv2.initUndistortRectifyMap(mtx, dist, None, newcameramtx, (w,h), cv2.CV_32FC1)
+undistorted = cv2.remap(img, mapx, mapy, cv2.INTER_LINEAR)
+x, y, w0, h0 = roi
+undistorted = undistorted[y:y+h0, x:x+w0]
+cv2.imwrite("undistorted_sample.png", undistorted)
+print("Wrote undistorted_sample.png")
