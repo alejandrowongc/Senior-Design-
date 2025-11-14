@@ -82,7 +82,18 @@ while True:
         cv2.rectangle(roi, (x, y), (x + w, y + h), (200, 200, 200), 1)
         cv2.circle(roi, (cx, cy), 3, (255, 255, 0), -1)
 
-        # Only measure when passing through the center band
+        # Always display live length
+        cv2.putText(
+            roi,
+            f"{length_inches:.3f} in",
+            (x, y - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            2
+        )
+
+        # Only PASS/REJECT inside the center zone
         if CENTER_ZONE_LEFT <= cx <= CENTER_ZONE_RIGHT:
 
             if LOW_LIMIT <= length_inches <= HIGH_LIMIT:
@@ -96,16 +107,6 @@ while True:
 
             cv2.putText(
                 roi,
-                f"{length_inches:.3f} in",
-                (x, y - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 255),
-                2
-            )
-
-            cv2.putText(
-                roi,
                 result,
                 (x, y + h + 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
@@ -115,10 +116,11 @@ while True:
             )
 
         else:
+            # Outside center → still show length but tag as WAITING
             cv2.putText(
                 roi,
                 "WAITING",
-                (x, y - 10),
+                (x, y + h + 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
                 (0, 255, 255),
