@@ -1,0 +1,75 @@
+# Process contours
+if len(contours) > 0:
+    # Pick the largest contour (strip)
+    cnt = max(contours, key=cv2.contourArea)
+
+    area = cv2.contourArea(cnt)
+    if 1000 < area < 15000:
+
+        # Compute extreme left and right points of the strip
+        xs = cnt[:, 0, 0]
+        ys = cnt[:, 0, 1]
+
+        x_min = np.min(xs)
+        x_max = np.max(xs)
+        y_min = np.min(ys)
+        y_max = np.max(ys)
+
+        w = x_max - x_min
+        h = y_max - y_min
+
+        # Strip length = longer dimension (always use full contour)
+        length_pixels = max(w, h)
+        length_inches = length_pixels / PIXELS_PER_INCH
+
+        # Centroid
+        M = cv2.moments(cnt)
+        if M["m00"] > 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+        else:
+            cx = cy = 0
+
+        # Draw bounding box for visualization
+        cv2.rectangle(roi, (x_min, y_min), (x_max, y_max), (200, 200, 200), 1)
+        cv2.circle(roi, (cx, cy), 3, (255, 255, 0), -1)
+
+        # Always display length
+        cv2.putText(
+            roi,
+            f"{length_inches:.3f} in",
+            (x_min, y_min - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            2
+        )
+
+        # PASS/REJECT only based on centroid location
+        if CENTER_ZONE_LEFT <= cx <= CENTER_ZONE_RIGHT:
+            if LOW_LIMIT <= length_inches <= HIGH_LIMIT:
+                result = "PASS"
+                color = (0, 255, 0)
+            else:
+                result = "REJECT"
+                color = (0, 0, 255)
+
+            cv2.putText(
+                roi,
+                result,
+                (x_min, y_max + 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color,
+                2
+            )
+        else:
+            cv2.putText(
+                roi,
+                "WAITING",
+                (x_min, y_max + 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 255),
+                2
+            )
