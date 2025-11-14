@@ -27,14 +27,14 @@ HIGH_LIMIT = TARGET_LENGTH + TOL
 
 # --- Batch calibration factors (adjust after calibration) ---
 CAL_FACTORS = {
-    6: 1.000,
+    3: 1.000,
     9: 1.000,
     12: 1.000,
     16: 1.000
 }
 
 # Default batch
-BATCH_LENGTH = 6
+BATCH_LENGTH = 3
 
 # Center zone for accurate measurement
 ROI_WIDTH = ROI_X2 - ROI_X1
@@ -42,7 +42,7 @@ ROI_CENTER = ROI_WIDTH // 2
 CENTER_ZONE_LEFT = ROI_CENTER - 30
 CENTER_ZONE_RIGHT = ROI_CENTER + 30
 
-print("Press '6', '9', '1' (12 in), or '2' (16 in) to change batch.")
+print("Press '3', '9', '1' (12 in), or '2' (16 in) to change batch.")
 print("Press 'q' to quit")
 
 while True:
@@ -156,8 +156,8 @@ while True:
         break
 
     # Keyboard batch selection
-    if key == ord('6'):
-        BATCH_LENGTH = 6
+    if key == ord('3'):
+        BATCH_LENGTH = 3
     elif key == ord('9'):
         BATCH_LENGTH = 9
     elif key == ord('1'):     # For 12 inches
