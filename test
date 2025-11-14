@@ -4,9 +4,27 @@ import numpy as np
 from picamera2 import Picamera2
 import time
 
+# ---------------- Load Calibration ----------------
+calib = np.load("camera_calib.npz")
+mtx = calib["camera_matrix"]
+dist = calib["dist_coeffs"]
+
+FRAME_W, FRAME_H = 800, 480   # Must match capture resolution
+
+newcameramtx, roi = cv2.getOptimalNewCameraMatrix(
+    mtx, dist, (FRAME_W, FRAME_H), 1, (FRAME_W, FRAME_H)
+)
+
+# Precompute undistortion maps (fast, used every frame)
+mapx, mapy = cv2.initUndistortRectifyMap(
+    mtx, dist, None, newcameramtx, (FRAME_W, FRAME_H), cv2.CV_32FC1
+)
+
+print("Calibration loaded. Undistortion maps ready.")
+
 # ---------------- Camera Setup ----------------
 picam2 = Picamera2()
-config = picam2.create_preview_configuration(main={"size": (800, 480)})
+config = picam2.create_preview_configuration(main={"size": (FRAME_W, FRAME_H)})
 picam2.configure(config)
 picam2.start()
 time.sleep(2)
@@ -16,7 +34,7 @@ controls = {"AwbEnable": False, "AeEnable": False}
 picam2.set_controls(controls)
 picam2.set_controls({"AwbMode": 0, "ColourGains": (1.8, 1.0)})
 
-# ROI definition
+# ---------------- ROI ----------------
 ROI_X1, ROI_Y1, ROI_X2, ROI_Y2 = 10, 175, 790, 325
 
 PIXELS_PER_INCH = 42.0
@@ -31,42 +49,47 @@ center_band_left = int((roi_w * 0.5) - (roi_w * 0.10))
 center_band_right = int((roi_w * 0.5) + (roi_w * 0.10))
 
 print("Press 'q' to quit")
-while True:
-    frame = picam2.capture_array()
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    # Draw ROI on full frame
+while True:
+    # ---- Capture Frame ----
+    frame = picam2.capture_array()
+
+    # ---- Apply Undistortion ----
+    undist = cv2.remap(frame, mapx, mapy, cv2.INTER_LINEAR)
+
+    # Convert to RGB for display + processing
+    frame_rgb = cv2.cvtColor(undist, cv2.COLOR_BGR2RGB)
+
+    # Draw ROI box on the full frame
     cv2.rectangle(frame_rgb, (ROI_X1, ROI_Y1), (ROI_X2, ROI_Y2), (255, 0, 0), 2)
 
-    # Extract ROI
+    # Extract ROI for analysis
     roi = frame_rgb[ROI_Y1:ROI_Y2, ROI_X1:ROI_X2]
 
-    # Grayscale + blur + edges
+    # ---- Preprocessing ----
     gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blur, 50, 150)
 
-    kernel = np.ones((3,3), np.uint8)
+    kernel = np.ones((3, 3), np.uint8)
     edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
 
-    # Find contours
+    # ---- Contours ----
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     for cnt in contours:
         area = cv2.contourArea(cnt)
-
         x, y, w, h = cv2.boundingRect(cnt)
 
-        # Main length metrics
+        # Length calculation
         length_pixels = max(w, h)
         length_inches = length_pixels / PIXELS_PER_INCH
 
-        cx, cy = x + w // 2, y + h // 2
+        cx = x + w // 2
+        cy = y + h // 2
 
-        # Draw bounding box
         cv2.rectangle(roi, (x, y), (x + w, y + h), (255, 255, 0), 1)
 
-        # NEW — Write BOTH pixel count AND inch measurement
         cv2.putText(
             roi,
             f"{length_inches:.3f} in  |  {length_pixels} px",
@@ -79,7 +102,7 @@ while True:
 
         cv2.circle(roi, (cx, cy), 3, (255, 255, 0), -1)
 
-        # PASS/REJECT inside horizontal band
+        # ---- Pass/Fail in center band ----
         if center_band_left <= cx <= center_band_right:
             if LOW_LIMIT <= length_inches <= HIGH_LIMIT:
                 result = "PASS"
@@ -98,12 +121,13 @@ while True:
                 2
             )
 
-    # Visualize band
+    # ---- Visualize horizontal center band ----
     cv2.line(roi, (center_band_left, 0), (center_band_left, roi.shape[0]), (0, 255, 255), 1)
     cv2.line(roi, (center_band_right, 0), (center_band_right, roi.shape[0]), (0, 255, 255), 1)
-    cv2.line(roi, (roi.shape[1]//2,0), (roi.shape[1]//2,roi.shape[0]), (0, 255, 0),1)
+    cv2.line(roi, (roi.shape[1]//2, 0), (roi.shape[1]//2, roi.shape[0]), (0, 255, 0), 1)
 
-    cv2.imshow("Full Frame (ROI Marked)", frame_rgb)
+    # ---- Show Result ----
+    cv2.imshow("Full Frame (Undistorted + ROI Marked)", frame_rgb)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
