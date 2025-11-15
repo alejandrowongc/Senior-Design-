@@ -51,7 +51,7 @@ picam2.set_controls({"AwbMode": 0, "ColourGains": (1.8, 1.0)})
 # ROI definition
 ROI_X1, ROI_Y1, ROI_X2, ROI_Y2 = 10, 175, 790, 325
 
-PIXELS_PER_INCH = 42.0
+PIXELS_PER_INCH = 38.5
 TARGET_LENGTH = 3.0
 TOL = 0.125
 LOW_LIMIT = TARGET_LENGTH - TOL
