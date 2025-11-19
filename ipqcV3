@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+import cv2
+import numpy as np
+from picamera2 import Picamera2
+import time
+import RPi.GPIO as GPIO
+from RpiMotorLib import RpiMotorLib
+import csv
+import os
+from datetime import datetime
+
+# ============================================================
+# -------------------- MOTOR SETUP ---------------------------
+# ============================================================
+
+DIR_PIN = 22
+STEP_PIN = 23
+EN_PIN = 24
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(EN_PIN, GPIO.OUT)
+
+mymotor = RpiMotorLib.A4988Nema(DIR_PIN, STEP_PIN, (21,21,21), "DRV8825")
+
+MOTOR_ACTIVE = False
+
+STEPS_TO_ACTIVE = 100
+STEP_DELAY = 0.0005
+
+def enable_motor():
+    GPIO.output(EN_PIN, GPIO.LOW)
+
+def disable_motor():
+    GPIO.output(EN_PIN, GPIO.HIGH)
+
+def motor_to_active():
+    global MOTOR_ACTIVE
+    if MOTOR_ACTIVE:
+        return
+    enable_motor()
+    mymotor.motor_go(False, "Full", STEPS_TO_ACTIVE, STEP_DELAY, False, 0.05)
+    disable_motor()
+    MOTOR_ACTIVE = True
+
+def motor_to_neutral():
+    global MOTOR_ACTIVE
+    if not MOTOR_ACTIVE:
+        return
+    enable_motor()
+    mymotor.motor_go(True, "Full", STEPS_TO_ACTIVE, STEP_DELAY, False, 0.05)
+    disable_motor()
+    MOTOR_ACTIVE = False
+
+# ============================================================
+# ---------------- CAMERA & CALIBRATION ----------------------
+# ============================================================
+
+cal = np.load("camera_calib.npz")
+mtx_full = cal["camera_matrix"]
+dist = cal["dist_coeffs"]
+
+orig_w, orig_h = 4056, 3040
+view_w, view_h = 800, 480
+
+scale_x = view_w / orig_w
+scale_y = view_h / orig_h
+
+mtx_scaled = np.array([
+    [mtx_full[0,0] * scale_x, 0,                   mtx_full[0,2] * scale_x],
+    [0,                   mtx_full[1,1] * scale_y, mtx_full[1,2] * scale_y],
+    [0, 0, 1]
+], dtype=np.float32)
+
+new_mtx, _ = cv2.getOptimalNewCameraMatrix(
+    mtx_scaled, dist, (view_w, view_h), 1, (view_w, view_h)
+)
+
+mapx, mapy = cv2.initUndistortRectifyMap(
+    mtx_scaled, dist, None, new_mtx, (view_w, view_h), cv2.CV_32FC1
+)
+
+# ============================================================
+# -------------------- CAMERA SETUP ---------------------------
+# ============================================================
+
+picam2 = Picamera2()
+config = picam2.create_preview_configuration(main={"size": (view_w, view_h)})
+picam2.configure(config)
+picam2.start()
+time.sleep(2)
+
+picam2.set_controls({"AwbEnable": False, "AeEnable": False})
+picam2.set_controls({"AwbMode": 0, "ColourGains": (1.8, 1.0)})
+
+# ============================================================
+# ---------------------- ROI SETTINGS -------------------------
+# ============================================================
+
+ROI_X1, ROI_Y1, ROI_X2, ROI_Y2 = 10, 175, 790, 325
+
+PIXELS_PER_INCH = 38.5
+TARGET_LENGTH = 3.0
+TOL = 0.125
+
+LOW_LIMIT = TARGET_LENGTH - TOL
+HIGH_LIMIT = TARGET_LENGTH + TOL
+
+roi_w = ROI_X2 - ROI_X1
+center_band_left = int((roi_w * 0.5) - (roi_w * 0.10))
+center_band_right = int((roi_w * 0.5) + (roi_w * 0.10))
+
+print("Press 'q' to quit")
+
+# ============================================================
+# ---------------- HMI + Logging SETUP ------------------------
+# ============================================================
+
+LOG_PATH = "reject_log.csv"
+
+def ensure_log():
+    if not os.path.exists(LOG_PATH):
+        with open(LOG_PATH, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["reject_number", "timestamp_iso"])
+
+def log_reject(reject_number):
+    ensure_log()
+    ts = datetime.now().isoformat(sep=" ", timespec="seconds")
+    with open(LOG_PATH, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([reject_number, ts])
+
+def get_measurement_input(win_name="HMI Input", width=800, height=480):
+    cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty(win_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
+    input_str = ""
+    prompt = "Enter target length (inches):"
+    hint = "Type number, '.' allowed. ENTER to confirm. BACKSPACE to edit."
+
+    while True:
+        canvas = np.zeros((height, width, 3), dtype=np.uint8)
+        cv2.putText(canvas, prompt, (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255,255,255), 2)
+        cv2.putText(canvas, input_str if input_str != "" else "_", (20, 200),
+                    cv2.FONT_HERSHEY_SIMPLEX, 3.0, (0,255,255), 4)
+        cv2.putText(canvas, hint, (20, 360), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 1)
+
+        cv2.imshow(win_name, canvas)
+        key = cv2.waitKey(0)
+
+        if key == 13 or key == 10:
+            try:
+                val = float(input_str)
+                cv2.destroyWindow(win_name)
+                return val
+            except:
+                for _ in range(2):
+                    cv2.putText(canvas, "Invalid number", (20, 260),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,255), 3)
+                    cv2.imshow(win_name, canvas)
+                    cv2.waitKey(200)
+                input_str = ""
+        elif key in [8,127]:
+            input_str = input_str[:-1]
+        elif key == 27:
+            cv2.destroyWindow(win_name)
+            raise SystemExit("User cancelled input (ESC).")
+        else:
+            try:
+                ch = chr(key)
+            except:
+                ch = None
+            if ch and (ch.isdigit() or ch == '.'):
+                input_str += ch
+
+# ============================================================
+# ---------------- Startup: ask user for length --------------
+# ============================================================
+
+try:
+    TARGET_LENGTH = get_measurement_input()
+except SystemExit:
+    disable_motor()
+    GPIO.cleanup()
+    picam2.stop()
+    cv2.destroyAllWindows()
+    raise
+
+TOL = 0.125 if TARGET_LENGTH < 10.0 else 0.25
+LOW_LIMIT = TARGET_LENGTH - TOL
+HIGH_LIMIT = TARGET_LENGTH + TOL
+
+pass_count = 0
+reject_count = 0
+last_decision = None
+
+# Debounce (ADDED)
+last_action_time = 0
+DEBOUNCE_MS = 250
+
+ensure_log()
+
+# ============================================================
+# ---------------- Full-screen camera window -----------------
+# ============================================================
+
+WINDOW_NAME = "Full Frame (ROI Marked)"
+cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
+# On-screen button (ADDED)
+BUTTON_X1, BUTTON_Y1 = 600, 10
+BUTTON_X2, BUTTON_Y2 = 790, 60
+
+# Button callback (ADDED)
+def check_button_click(event, x, y, flags, param):
+    global TARGET_LENGTH, LOW_LIMIT, HIGH_LIMIT, TOL
+    if event == cv2.EVENT_LBUTTONDOWN:
+        if BUTTON_X1 <= x <= BUTTON_X2 and BUTTON_Y1 <= y <= BUTTON_Y2:
+            new_len = get_measurement_input()
+            TARGET_LENGTH = new_len
+            TOL = 0.125 if new_len < 10 else 0.25
+            LOW_LIMIT = new_len - TOL
+            HIGH_LIMIT = new_len + TOL
+
+cv2.setMouseCallback(WINDOW_NAME, check_button_click)
+
+# ============================================================
+# ----------------------- MAIN LOOP --------------------------
+# ============================================================
+
+while True:
+    frame = picam2.capture_array()
+    frame = cv2.remap(frame, mapx, mapy, cv2.INTER_LINEAR)
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    cv2.rectangle(frame_rgb, (ROI_X1, ROI_Y1), (ROI_X2, ROI_Y2), (255, 0, 0), 2)
+    roi = frame_rgb[ROI_Y1:ROI_Y2, ROI_X1:ROI_X2]
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blur, 50, 150)
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((3,3), np.uint8))
+
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    decision = None
+
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        length_pixels = max(w, h)
+        length_inches = length_pixels / PIXELS_PER_INCH
+        cx, cy = x + w//2, y + h//2
+
+        cv2.rectangle(roi, (x,y), (x+w,y+h), (255,255,0), 1)
+        cv2.putText(roi, f"{length_inches:.3f} in | {length_pixels}px",
+                    (x, max(0,y-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+
+        cv2.circle(roi, (cx, cy), 3, (255,255,0), -1)
+
+        if center_band_left <= cx <= center_band_right:
+            if LOW_LIMIT <= length_inches <= HIGH_LIMIT:
+                decision = "PASS"
+            else:
+                decision = "REJECT"
+
+    cv2.line(roi, (center_band_left, 0), (center_band_left, roi.shape[0]), (0,255,255), 1)
+    cv2.line(roi, (center_band_right, 0), (center_band_right, roi.shape[0]), (0,255,255), 1)
+    cv2.line(roi, (roi.shape[1]//2,0), (roi.shape[1]//2,roi.shape[0]), (0,255,0), 1)
+
+    # ---------------------------------------------------------
+    # MOTOR DECISION + DEBOUNCE (MODIFIED)
+    # ---------------------------------------------------------
+
+    if decision == "REJECT":
+        if last_decision != "REJECT":
+            reject_count += 1
+            log_reject(reject_count)
+
+        now = time.time() * 1000
+        if now - last_action_time > DEBOUNCE_MS:
+            motor_to_active()
+            last_action_time = now
+
+        last_decision = "REJECT"
+
+    elif decision == "PASS":
+        if last_decision != "PASS":
+            pass_count += 1
+
+        now = time.time() * 1000
+        if now - last_action_time > DEBOUNCE_MS:
+            motor_to_neutral()
+            last_action_time = now
+
+        last_decision = "PASS"
+
+    else:
+        last_decision = None
+
+    # ---------------------------------------------------------
+    # HMI Overlay
+    # ---------------------------------------------------------
+
+    overlay_x, overlay_y = 10, 30
+    line_height = 36
+    font_scale = 0.9
+    thickness = 2
+
+    cv2.putText(frame_rgb, f"Length: {TARGET_LENGTH:.3f} in", (overlay_x, overlay_y),
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255,255,255), thickness)
+    cv2.putText(frame_rgb, f"Tolerance: ±{TOL:.3f} in", (overlay_x, overlay_y + line_height),
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255,255,255), thickness)
+    cv2.putText(frame_rgb, f"PASS: {pass_count}", (overlay_x, overlay_y + line_height*2),
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0,200,0), thickness)
+    cv2.putText(frame_rgb, f"REJECT: {reject_count}", (overlay_x, overlay_y + line_height*3),
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0,0,200), thickness)
+
+    # ---------------------------------------------------------
+    # Draw change-length button (ADDED)
+    # ---------------------------------------------------------
+
+    cv2.rectangle(frame_rgb, (BUTTON_X1, BUTTON_Y1), (BUTTON_X2, BUTTON_Y2), (50, 50, 200), -1)
+    cv2.putText(frame_rgb, "Length", (BUTTON_X1 + 10, BUTTON_Y1 + 35),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 2)
+
+    cv2.imshow(WINDOW_NAME, frame_rgb)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# ============================================================
+# ---------------------- CLEANUP ------------------------------
+# ============================================================
+
+disable_motor()
+GPIO.cleanup()
+cv2.destroyAllWindows()
+picam2.stop()
